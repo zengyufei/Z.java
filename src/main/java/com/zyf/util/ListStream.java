@@ -6,14 +6,34 @@ import java.util.*;
 import java.util.function.*;
 import java.util.stream.Collector;
 
+/**
+ * 一个功能强大且易用的流式处理工具类，提供类似 Java 8 Stream 的链式操作，
+ * 但针对集合处理进行了增强，并采用了更加直观的 API 设计。
+ * 支持延迟加载（Lazy Evaluation），大部分中间操作仅在触发终端操作时执行。
+ *
+ * @param <T> 流中元素的类型
+ */
 public class ListStream<T> {
 
+    /** 原始数据源，可以是任何可迭代对象 */
     private final Iterable<T> source;
 
+    /**
+     * 包内构造函数，建议使用静态工厂方法 {@link #of(Iterable)} 创建实例
+     *
+     * @param source 数据源
+     */
     ListStream(Iterable<T> source) {
         this.source = source;
     }
 
+    /**
+     * 创建一个新的 ListStream 实例
+     *
+     * @param source 实现了 Iterable 接口的数据源，不能为 null
+     * @param <T>    元素类型
+     * @return 封装了数据源的 ListStream 对象
+     */
     public static <T> ListStream<T> of(Iterable<T> source) {
         return new ListStream<>(Objects.requireNonNull(source));
     }
@@ -22,102 +42,215 @@ public class ListStream<T> {
     // ====================================================================================
     //  filter { predicate }: 返回一个新的列表，包含所有满足给定条件的元素。
 
+    /**
+     * 【别名】根据多个谓词条件过滤元素，所有条件必须同时满足（逻辑与）
+     *
+     * @param predicates 谓词数组
+     * @return 过滤后的 ListStream
+     */
     @SafeVarargs
     public final ListStream<T> ands(Predicate<T>... predicates) {
         return filters(predicates);
     }
 
+    /**
+     * 过滤满足给定条件的元素
+     *
+     * @param predicate 过滤谓词
+     * @return 过滤后的 ListStream
+     */
     public ListStream<T> filter(Predicate<? super T> predicate) {
         return filters(predicate);
     }
 
+    /**
+     * 根据多个谓词条件过滤元素，所有条件必须同时满足（逻辑与）
+     * 优化：采用循环遍历谓词，避免在高频调用下产生大量 Stream 对象
+     *
+     * @param predicates 谓词数组
+     * @return 过滤后的 ListStream
+     */
     @SafeVarargs
     public final ListStream<T> filters(Predicate<? super T>... predicates) {
         Objects.requireNonNull(predicates);
-        return of(createFilteredIterable(elem ->
-                Arrays.stream(predicates).allMatch(predicate -> predicate.test(elem))));
+        if (predicates.length == 0) return this;
+        return of(createFilteredIterable(elem -> {
+            // 手动循环检查每个谓词，一旦不满足则立即返回 false (Short-circuiting)
+            for (Predicate<? super T> p : predicates) {
+                if (!p.test(elem)) return false;
+            }
+            return true;
+        }));
     }
 
     //  filterOrs { predicate }: 返回一个新的列表，包含任意满足给定条件的元素。
 
     // 过滤或的实现
+    /**
+     * 【别名】根据多个谓词条件过滤元素，满足任意一个条件即可（逻辑或）
+     *
+     * @param predicates 谓词数组
+     * @return 过滤后的 ListStream
+     */
     @SafeVarargs
     public final ListStream<T> ors(Predicate<T>... predicates) {
         return filterOrs(predicates);
     }
 
-    // 过滤或的实现
+    /**
+     * 根据多个谓词条件过滤元素，满足任意一个条件即可（逻辑或）
+     * 优化：采用循环遍历谓词，支持短路逻辑
+     *
+     * @param predicates 谓词数组
+     * @return 过滤后的 ListStream
+     */
     @SafeVarargs
     public final ListStream<T> filterOrs(Predicate<T>... predicates) {
-        return of(createFilteredIterable(elem ->
-                Arrays.stream(predicates).anyMatch(predicate -> predicate.test(elem))));
+        if (predicates == null || predicates.length == 0) return this;
+        return of(createFilteredIterable(elem -> {
+            // 只要有一个谓词满足，即视为匹配成功
+            for (Predicate<T> p : predicates) {
+                if (p.test(elem)) return true;
+            }
+            return false;
+        }));
     }
 
     //  filterNot { predicate }: 返回一个新列表，包含所有不满足给定条件的元素。
 
+    /**
+     * 过滤不满足给定条件的元素
+     *
+     * @param predicate 过滤谓词
+     * @return 过滤后的 ListStream
+     */
     public ListStream<T> filterNot(Predicate<? super T> predicate) {
         return filterNots(predicate);
     }
 
+    /**
+     * 过滤不满足任何给定条件的元素（即所有条件都不满足时才保留）
+     *
+     * @param predicates 谓词数组
+     * @return 过滤后的 ListStream
+     */
     @SafeVarargs
     public final ListStream<T> filterNots(Predicate<? super T>... predicates) {
         Objects.requireNonNull(predicates);
-        return of(createFilteredIterable(elem ->
-                Arrays.stream(predicates).noneMatch(predicate -> predicate.test(elem))));
+        return of(createFilteredIterable(elem -> {
+            for (Predicate<? super T> p : predicates) {
+                if (p.test(elem)) return false;
+            }
+            return true;
+        }));
     }
 
 
     //  filterNull(): 返回一个新列表，其中包含null元素。
 
+    /**
+     * 仅保留数据源中为 null 的元素
+     *
+     * @return 只包含 null 的 ListStream
+     */
     public final ListStream<T> filterNull() {
         return of(createFilteredIterable(Objects::isNull));
     }
 
+    /**
+     * 根据提取的属性是否为 null 进行过滤
+     *
+     * @param function 属性提取器
+     * @return 过滤后的 ListStream
+     */
     public final ListStream<T> filterNull(Function<T, ?> function) {
         return filterNulls(function);
     }
 
+    /**
+     * 根据提取的多个属性是否全部为 null 进行过滤
+     *
+     * @param functions 多个属性提取器
+     * @return 过滤后的 ListStream
+     */
     @SafeVarargs
     public final ListStream<T> filterNulls(Function<T, ?>... functions) {
         Objects.requireNonNull(functions);
-        return of(createFilteredIterable(elem ->
-                Arrays.stream(functions).allMatch(fun -> {
-                    Object value = fun.apply(elem);
-                    return value == null;
-                })));
+        return of(createFilteredIterable(elem -> {
+            for (Function<T, ?> fun : functions) {
+                if (fun.apply(elem) != null) return false;
+            }
+            return true;
+        }));
     }
 
     //  filterNotNull(): 返回一个新列表，其中不包含null元素。
 
+    /**
+     * 移除所有为 null 的元素
+     *
+     * @return 不包含 null 的 ListStream
+     */
     public final ListStream<T> filterNotNull() {
         return of(createFilteredIterable(Objects::nonNull));
     }
 
+    /**
+     * 根据提取的属性是否不为 null 进行过滤
+     *
+     * @param function 属性提取器
+     * @return 过滤后的 ListStream
+     */
     public final ListStream<T> filterNotNull(Function<T, ?> function) {
         return filterNotNulls(function);
     }
 
+    /**
+     * 根据提取的多个属性是否全部不为 null 进行过滤
+     *
+     * @param functions 多个属性提取器
+     * @return 过滤后的 ListStream
+     */
     @SafeVarargs
     public final ListStream<T> filterNotNulls(Function<T, ?>... functions) {
         Objects.requireNonNull(functions);
-        return of(createFilteredIterable(elem ->
-                Arrays.stream(functions).allMatch(fun -> {
-                    Object value = fun.apply(elem);
-                    return value != null;
-                })));
+        return of(createFilteredIterable(elem -> {
+            for (Function<T, ?> fun : functions) {
+                if (fun.apply(elem) == null) return false;
+            }
+            return true;
+        }));
     }
 
 
     //  filterIndexed { index, value -> predicate }: 类似filter，但谓词同时接收元素的索引。
 
+    /**
+     * 带索引的过滤。谓词接收元素的当前索引和元素本身。
+     *
+     * @param predicates 带索引的过滤谓词
+     * @return 过滤后的 ListStream
+     */
     @SafeVarargs
     public final ListStream<T> filterIndexeds(BiPredicate<Integer, ? super T>... predicates) {
         Objects.requireNonNull(predicates);
-        return of(createFilteredIterable((index, elem) ->
-                Arrays.stream(predicates).allMatch(predicate -> predicate.test(index, elem))));
+        if (predicates.length == 0) return this;
+        return of(createFilteredIterable((index, elem) -> {
+            for (BiPredicate<Integer, ? super T> p : predicates) {
+                if (!p.test(index, elem)) return false;
+            }
+            return true;
+        }));
     }
 
-    //  filterIsInstance<R>(): 返回一个新列表，包含所有指定类型R的元素。
+    /**
+     * 过滤流中属于指定类类型的元素，并将其转换为对应的子类型。
+     * 这是一个中间操作，支持延迟计算。
+     *
+     * @param classOfR 目标类型的 Class 对象
+     * @param <R>      目标子类型
+     * @return 包含目标类型元素的 ListStream<R>
+     */
     public final <R> ListStream<R> filterIsInstance(Class<R> classOfR) {
         Objects.requireNonNull(classOfR, "classOfR cannot be null");
 
@@ -150,28 +283,36 @@ public class ListStream<T> {
             private void computeNext() {
                 while (sourceIterator.hasNext()) {
                     T current = sourceIterator.next();
-                    // 使用 Class.isInstance() 进行类型检查
+                    // 类型检查及转换
                     if (classOfR.isInstance(current)) {
-                        // 如果是指定类型的实例，进行强制类型转换并存储
-                        nextElement = classOfR.cast(current); // 或者 (R) current; 但 cast() 更安全
+                        nextElement = classOfR.cast(current);
                         hasNextResult = true;
                         hasNextComputed = true;
                         return;
                     }
                 }
-                // 如果没有找到更多匹配的元素
                 hasNextResult = false;
                 hasNextComputed = true;
             }
         });
     }
 
-    //  drop(n): 返回一个新的列表，移除了前n个元素。
-
+    /**
+     * 【别名】跳过前 n 个元素
+     *
+     * @param n 跳过的数量
+     * @return 过滤后的 ListStream
+     */
     public ListStream<T> drop(int n) {
         return skip(n);
     }
 
+    /**
+     * 跳过前 n 个元素
+     *
+     * @param n 跳过的数量
+     * @return 过滤后的 ListStream
+     */
     public ListStream<T> skip(int n) {
         if (n < 0) {
             return this;
@@ -179,13 +320,20 @@ public class ListStream<T> {
         return of(createFilteredIterable((index, elem) -> index + 1 > n));
     }
 
-    //  dropWhile { predicate }: 从第一个不满足条件的元素开始，返回剩余的元素。
+    /**
+     * 从起始位置开始丢弃元素，直到遇到第一个不满足条件的元素为止。从该元素开始保留剩余的所有元素。
+     * 这是一个中间操作，支持延迟计算。
+     *
+     * @param predicate 丢弃条件谓词
+     * @return 过滤后的 ListStream
+     */
     public final ListStream<T> dropWhile(Predicate<T> predicate) {
         Objects.requireNonNull(predicate, "predicate cannot be null");
 
         return ListStream.of(() -> new Iterator<>() {
             final Iterator<T> sourceIterator = source.iterator();
-            boolean dropping = true; // 初始状态为“正在丢弃”
+            // 状态标志：是否处于丢弃元素的阶段
+            boolean dropping = true;
             T nextElement;
             boolean hasNextComputed = false;
             boolean hasNextResult = false;
@@ -214,39 +362,47 @@ public class ListStream<T> {
                 while (sourceIterator.hasNext()) {
                     T current = sourceIterator.next();
                     if (dropping) {
-                        // 如果还在丢弃阶段，检查当前元素是否满足条件
+                        // 还在丢弃阶段：如果满足条件，则继续丢弃
                         if (predicate.test(current)) {
-                            // 满足条件，继续丢弃，不返回此元素
                             continue;
                         } else {
-                            // 第一个不满足条件的元素，从这里开始“保留”
-                            dropping = false; // 停止丢弃
+                            // 遇到第一个不满足条件的元素，切换状态并准备返回
+                            dropping = false;
                             nextElement = current;
                             hasNextResult = true;
                             hasNextComputed = true;
                             return;
                         }
                     } else {
-                        // 一旦停止丢弃，之后的所有元素都直接返回
+                        // 已经过了丢弃阶段：所有后续元素直接返回
                         nextElement = current;
                         hasNextResult = true;
                         hasNextComputed = true;
                         return;
                     }
                 }
-                // 如果迭代器没有更多元素了
                 hasNextResult = false;
                 hasNextComputed = true;
             }
         });
     }
 
-    //  take(n): 返回前n个元素的新列表。
-
+    /**
+     * 【别名】限制流中元素的数量，只保留前 n 个元素。
+     *
+     * @param n 保留的数量
+     * @return 过滤后的 ListStream
+     */
     public ListStream<T> take(int n) {
         return limit(n);
     }
 
+    /**
+     * 限制流中元素的数量，只保留前 n 个元素。
+     *
+     * @param n 保留的数量
+     * @return 过滤后的 ListStream
+     */
     public ListStream<T> limit(int n) {
         if (n < 0) {
             return this;
@@ -254,13 +410,20 @@ public class ListStream<T> {
         return of(createFilteredIterable((index, elem) -> index + 1 <= n));
     }
 
-    //  takeWhile { predicate }: 返回从开头开始，连续满足条件的元素。
+    /**
+     * 获取流中连续满足条件的元素。一旦遇到第一个不满足条件的元素，流立即结束。
+     * 这是一个中间操作，支持延迟计算。
+     *
+     * @param predicate 获取条件谓词
+     * @return 包含流开头连续满足条件的元素的 ListStream
+     */
     public final ListStream<T> takeWhile(Predicate<T> predicate) {
         Objects.requireNonNull(predicate, "predicate cannot be null");
 
         return ListStream.of(() -> new Iterator<>() {
             final Iterator<T> sourceIterator = source.iterator();
-            boolean taking = true; // 初始状态为“正在获取”
+            // 状态标志：是否仍在获取阶段
+            boolean taking = true;
             T nextElement;
             boolean hasNextComputed = false;
             boolean hasNextResult = false;
@@ -286,7 +449,7 @@ public class ListStream<T> {
             }
 
             private void computeNext() {
-                if (!taking) { // 如果已经停止获取，直接返回没有更多元素
+                if (!taking) {
                     hasNextResult = false;
                     hasNextComputed = true;
                     return;
@@ -295,79 +458,79 @@ public class ListStream<T> {
                 while (sourceIterator.hasNext()) {
                     T current = sourceIterator.next();
                     if (predicate.test(current)) {
-                        // 如果满足条件，则获取此元素
+                        // 满足条件：保留并继续
                         nextElement = current;
                         hasNextResult = true;
                         hasNextComputed = true;
                         return;
                     } else {
-                        // 遇到第一个不满足条件的元素，停止获取
-                        taking = false; // 停止获取
-                        break; // 退出循环，表示没有更多元素可返回
+                        // 遇到第一个不满足条件的元素：标记为结束
+                        taking = false;
+                        break;
                     }
                 }
-                // 如果循环结束，或者因为不满足条件而中断，表示没有更多元素
                 hasNextResult = false;
                 hasNextComputed = true;
             }
         });
     }
 
-    //  slice(indices): 返回一个新列表，包含指定索引处的元素。
-
+    /**
+     * 切片操作。提取指定索引集合中的元素。
+     *
+     * @param indices 需要保留的索引集合
+     * @return 包含指定索引对应元素的 ListStream
+     */
     public final ListStream<T> slice(Collection<Integer> indices) {
         Objects.requireNonNull(indices, "indices collection cannot be null");
 
-        // 将索引集合转换为HashSet以便O(1)查找
-        final Set<Integer> targetIndices = new HashSet<>(indices);
+        return ListStream.of(() -> {
+            // 在迭代开始时延迟构建索引集，确保彻底延迟且不影响原始流状态
+            final Set<Integer> targetIndices = new HashSet<>(indices);
+            
+            return new Iterator<>() {
+                final Iterator<T> sourceIterator = source.iterator();
+                int currentIndex = 0;
+                T nextElement;
+                boolean hasNextComputed = false;
+                boolean hasNextResult = false;
 
-        return ListStream.of(() -> new Iterator<>() {
-            final Iterator<T> sourceIterator = source.iterator();
-            int currentIndex = 0; // 当前遍历的元素索引
-            T nextElement;
-            boolean hasNextComputed = false;
-            boolean hasNextResult = false;
-
-            @Override
-            public boolean hasNext() {
-                if (!hasNextComputed) {
-                    computeNext();
-                }
-                return hasNextResult;
-            }
-
-            @Override
-            public T next() {
-                if (!hasNextComputed) {
-                    computeNext();
-                }
-                if (!hasNextResult) {
-                    throw new NoSuchElementException();
-                }
-                hasNextComputed = false;
-                return nextElement;
-            }
-
-            private void computeNext() {
-                while (sourceIterator.hasNext()) {
-                    T current = sourceIterator.next();
-                    if (targetIndices.contains(currentIndex)) {
-                        nextElement = current;
-                        hasNextResult = true;
-                        hasNextComputed = true;
-                        // 注意：这里不增加 currentIndex，因为一个索引可能被多次请求，
-                        // 但我们的目标是按原始流顺序提取元素。
-                        // 如果 indices 是一个排好序的 Set，并且只希望每个索引提取一次，
-                        // 那么可以在找到后从 targetIndices 中移除。
-                        // 当前实现允许重复索引返回重复元素。
-                        currentIndex++; // 继续检查下一个原始元素
-                        return;
+                @Override
+                public boolean hasNext() {
+                    if (!hasNextComputed) {
+                        computeNext();
                     }
-                    currentIndex++; // 即使不匹配，也增加索引
+                    return hasNextResult;
                 }
-                hasNextResult = false;
-                hasNextComputed = true;
-            }
+
+                @Override
+                public T next() {
+                    if (!hasNextComputed) {
+                        computeNext();
+                    }
+                    if (!hasNextResult) {
+                        throw new NoSuchElementException();
+                    }
+                    hasNextComputed = false;
+                    return nextElement;
+                }
+
+                private void computeNext() {
+                    while (sourceIterator.hasNext()) {
+                        T current = sourceIterator.next();
+                        if (targetIndices.contains(currentIndex)) {
+                            nextElement = current;
+                            hasNextResult = true;
+                            hasNextComputed = true;
+                            currentIndex++;
+                            return;
+                        }
+                        currentIndex++;
+                    }
+                    hasNextResult = false;
+                    hasNextComputed = true;
+                }
+            };
         });
     }
 
@@ -435,27 +598,34 @@ public class ListStream<T> {
     //  distinct(): 返回一个新列表，包含所有唯一的元素（基于equals()）。
 
     public ListStream<T> distinct() {
-        Set<Object> seen = new HashSet<>();
-        return of(createFilteredIterable(elem -> {
-            if (seen.contains(elem)) {
-                return false;
-            }
-            seen.add(elem);
-            return true;
-        }));
+        // 彻底的延迟初始化：将 Set 的创建移入 Iterable 的 lambda 内部
+        return of(() -> {
+            Set<Object> seen = new HashSet<>();
+            return createFilteredIterable(elem -> {
+                if (seen.contains(elem)) {
+                    return false;
+                }
+                seen.add(elem);
+                return true;
+            }).iterator();
+        });
     }
 
     //  distinctBy { selector }: 返回一个新列表，通过给定选择器函数返回的键来判断唯一性。
 
     public ListStream<T> distinct(Function<T, ?> keyExtractor) {
-        Set<Object> seen = new HashSet<>();
-        return of(createFilteredIterable(elem -> {
-            if (seen.contains(keyExtractor.apply(elem))) {
-                return false;
-            }
-            seen.add(keyExtractor.apply(elem));
-            return true;
-        }));
+        // 彻底的延迟初始化：将 Set 的创建移入 Iterable 的 lambda 内部
+        return of(() -> {
+            Set<Object> seen = new HashSet<>();
+            return createFilteredIterable(elem -> {
+                Object key = keyExtractor.apply(elem);
+                if (seen.contains(key)) {
+                    return false;
+                }
+                seen.add(key);
+                return true;
+            }).iterator();
+        });
     }
 
     // ====================================================================================
@@ -464,8 +634,13 @@ public class ListStream<T> {
 
     // ================================ 映射 (Mapping)  ==================================
     // ====================================================================================
-    //  map { transform }: 返回一个新的列表，其中每个元素都是通过给定转换函数转换而来。
-
+    /**
+     * 元素映射。将流中的每个元素通过映射函数转换为另一种形式。
+     *
+     * @param mapper 映射函数
+     * @param <R>    映射后的元素类型
+     * @return 映射后的 ListStream
+     */
     public <R> ListStream<R> map(Function<? super T, ? extends R> mapper) {
         Objects.requireNonNull(mapper);
         return of(() -> new Iterator<>() {
@@ -476,14 +651,18 @@ public class ListStream<T> {
             }
 
             public R next() {
-                final T next = iterator.next();
-                return mapper.apply(next);
+                return mapper.apply(iterator.next());
             }
         });
     }
 
-    //  mapIndexed { index, value -> transform }: 类似map，但转换函数同时接收元素的索引。接收元素的索引。
-
+    /**
+     * 带索引的映射。映射函数同时接收元素的当前索引和元素本身。
+     *
+     * @param mapper 带索引的映射函数
+     * @param <R>    映射后的元素类型
+     * @return 映射后的 ListStream
+     */
     public <R> ListStream<R> mapIndexed(BiFunction<Integer, ? super T, ? extends R> mapper) {
         Objects.requireNonNull(mapper);
         return of(() -> new Iterator<>() {
@@ -495,8 +674,7 @@ public class ListStream<T> {
             }
 
             public R next() {
-                final R r = mapper.apply(index, iterator.next());
-                index += 1;
+                final R r = mapper.apply(index++, iterator.next());
                 return r;
             }
         });
@@ -553,10 +731,6 @@ public class ListStream<T> {
 
     public <R> ListStream<R> flatMap(Function<? super T, ? extends Iterable<? extends R>> mapper) {
         Objects.requireNonNull(mapper, "mapper cannot be null");
-
-        if (isEmpty()) {
-            return of(new ArrayList<>());
-        }
 
         return of(() -> new Iterator<>() {
             final Iterator<T> iterator = source.iterator();
@@ -654,6 +828,16 @@ public class ListStream<T> {
     //  reduce { acc, value -> operation }: 从第一个元素开始，将元素累计起来，每次使用上一次的累计值和当前元素进行操作。
 
 
+    /**
+     * 基础聚合操作。将流中的元素通过映射后，使用累加器进行聚合。
+     *
+     * @param supplier 结果提供者（初始值）
+     * @param func     元素转换函数
+     * @param function 聚合累加函数
+     * @param <R>      最终结果类型
+     * @param <E>      中间转换类型
+     * @return 聚合后的结果
+     */
     public <S, E, R> R reduce(Supplier<R> supplier, Function<T, E> func, BiFunction<R, E, R> function) {
         R r = supplier.get();
         for (T t : source) {
@@ -828,11 +1012,20 @@ public class ListStream<T> {
         return sumBigDecimal(mapper).longValue();
     }
 
+    /**
+     * 对流中元素提取的数字进行求和，返回 BigDecimal 以保证精度。
+     *
+     * @param mapper 数字提取函数
+     * @return BigDecimal 类型的总和
+     */
     public BigDecimal sumBigDecimal(Function<T, Number> mapper) {
-        BigDecimal sum = new BigDecimal("0.0");
+        BigDecimal sum = BigDecimal.ZERO;
         for (T t : source) {
             Number r = mapper.apply(t);
-            sum = sum.add(new BigDecimal(String.valueOf(r)));
+            if (r != null) {
+                // 优化：使用 valueOf 避免 new BigDecimal(String.valueOf()) 的开销
+                sum = sum.add(BigDecimal.valueOf(r.doubleValue()));
+            }
         }
         return sum;
     }
@@ -850,12 +1043,12 @@ public class ListStream<T> {
     }
 
     public BigDecimal sumBigDecimal() {
-        BigDecimal sum = new BigDecimal("0.0");
+        BigDecimal sum = BigDecimal.ZERO;
         for (T t : source) {
-            if (t instanceof Number) {
-                sum = sum.add(new BigDecimal(String.valueOf(t)));
-            } else {
-                throw new IllegalArgumentException("不是数字,不能计算");
+            if (t instanceof Number n) {
+                sum = sum.add(BigDecimal.valueOf(n.doubleValue()));
+            } else if (t != null) {
+                throw new IllegalArgumentException("不是数字,不能计算: " + t.getClass().getName());
             }
         }
         return sum;
@@ -874,27 +1067,30 @@ public class ListStream<T> {
         return averageBigDecimal(mapper).longValue();
     }
 
+    /**
+     * 计算流中提取数字的平均值。
+     *
+     * @param mapper 数字提取函数
+     * @return 平均值，保留 2 位小数点，四舍五入
+     */
     public final BigDecimal averageBigDecimal(Function<T, Number> mapper) {
-        BigDecimal total = new BigDecimal("0.0");
-        BigDecimal count = BigDecimal.ZERO;
+        BigDecimal total = BigDecimal.ZERO;
+        long count = 0;
 
         for (final T element : source) {
             final Number number = mapper.apply(element);
             if (number == null) {
                 continue;
-            } else if (element instanceof Number) {
-                total = total.add(new BigDecimal(String.valueOf(number)));
-                count = count.add(BigDecimal.ONE); // 计数
-            } else if (element != null) {
-                // 如果遇到非 Number 类型的元素，抛出异常
-                throw new IllegalStateException("Element is not a Number type when calculating average: " + element.getClass().getName() + " -> " + element);
             }
+            total = total.add(BigDecimal.valueOf(number.doubleValue()));
+            count++;
         }
 
-        if (count.equals(BigDecimal.ZERO)) {
-            return total; // 如果没有数字元素（空集合或只包含非数字元素），返回 NaN
+        if (count == 0) {
+            return total;
         } else {
-            return total.divide(count, 2, RoundingMode.HALF_UP); // 计算并返回平均值
+            // 设置默认精度和舍入模式
+            return total.divide(BigDecimal.valueOf(count), 2, RoundingMode.HALF_UP);
         }
     }
 
@@ -912,23 +1108,22 @@ public class ListStream<T> {
     }
 
     public final BigDecimal averageBigDecimal() {
-        BigDecimal total = new BigDecimal("0.0");
-        BigDecimal count = BigDecimal.ZERO;
+        BigDecimal total = BigDecimal.ZERO;
+        long count = 0;
 
         for (final T element : source) {
-            if (element instanceof Number) {
-                total = total.add(new BigDecimal(String.valueOf(element)));
-                count = count.add(BigDecimal.ONE); // 计数
+            if (element instanceof Number n) {
+                total = total.add(BigDecimal.valueOf(n.doubleValue()));
+                count++;
             } else if (element != null) {
-                // 如果遇到非 Number 类型的元素，抛出异常
                 throw new IllegalStateException("Element is not a Number type when calculating average: " + element.getClass().getName() + " -> " + element);
             }
         }
 
-        if (count.equals(BigDecimal.ZERO)) {
-            return total; // 如果没有数字元素（空集合或只包含非数字元素），返回 NaN
+        if (count == 0) {
+            return total;
         } else {
-            return total.divide(count, 2, RoundingMode.HALF_UP); // 计算并返回平均值
+            return total.divide(BigDecimal.valueOf(count), 2, RoundingMode.HALF_UP);
         }
     }
     //  count(): 返回集合中的元素数量。
@@ -939,15 +1134,18 @@ public class ListStream<T> {
         return count();
     }
 
+    /**
+     * 返回流中的元素总数。
+     * 优化：如果数据源本身支持 size()，则直接调用以提高效率。
+     *
+     * @return 元素数量
+     */
     public long count() {
-        if (isEmpty()) {
-            return 0;
-        }
-        // 如果是Collection类型，直接返回size
+        // 如果是Collection类型，直接返回size，避免 O(N) 遍历
         if (source instanceof Collection) {
             return ((Collection<?>) source).size();
         }
-        // 否则遍历计数
+        // 对于普通 Iterable，必须遍历计数
         long count = 0;
         for (T ignored : source) {
             count++;
@@ -959,14 +1157,13 @@ public class ListStream<T> {
 
     @SafeVarargs
     public final long count(Predicate<T>... predicates) {
-        if (isEmpty()) {
-            return 0;
-        }
-        // 否则遍历计数
         long count = 0;
         for (T e : source) {
-            if (Arrays.stream(predicates).anyMatch(predicate -> predicate.test(e))) {
-                count++;
+            for (Predicate<T> p : predicates) {
+                if (p.test(e)) {
+                    count++;
+                    break;
+                }
             }
         }
         return count;
@@ -974,25 +1171,31 @@ public class ListStream<T> {
 
     //  maxOrNull(): 返回集合中的最大元素，如果为空则返回null。
 
+    /**
+     * 返回流中的最大元素。要求元素实现 Comparable 接口。
+     *
+     * @return 最大元素，如果流为空则返回 null
+     * @throws IllegalStateException 如果元素未实现 Comparable
+     */
     public final T maxOrNull() {
         Iterator<T> iterator = source.iterator();
         if (!iterator.hasNext()) {
-            return null; // 集合为空，返回 null
+            return null;
         }
 
-        T maxElement = iterator.next(); // 假定第一个元素是最大值
+        T maxElement = iterator.next();
 
         while (iterator.hasNext()) {
             T current = iterator.next();
-            // 元素必须是 Comparable 的
+            // 运行时类型检查，确保可比较
             if (!(current instanceof Comparable)) {
                 throw new IllegalStateException("Elements must be Comparable to use maxOrNull()");
             }
-            @SuppressWarnings("unchecked") // 安全转换，因为我们已经检查了 instanceof Comparable
+            @SuppressWarnings("unchecked")
             Comparable<T> comparableCurrent = (Comparable<T>) current;
 
             if (comparableCurrent.compareTo(maxElement) > 0) {
-                maxElement = current; // 找到更大的元素，更新最大值
+                maxElement = current;
             }
         }
         return maxElement;
@@ -1197,19 +1400,8 @@ public class ListStream<T> {
         Objects.requireNonNull(keyMapper, "keyMapper cannot be null");
         Objects.requireNonNull(valueMapper, "valueMapper cannot be null");
 
-        Map<K, List<V>> result = new HashMap<>();
-        if (isEmpty()) {
-            return new MapListStream<>(result);
-        }
-
-        for (T element : source) {
-            if (element != null) {
-                K key = keyMapper.apply(element);
-                V value = valueMapper.apply(element);
-                result.computeIfAbsent(key, k -> new ArrayList<>()).add(value);
-            }
-        }
-        return new MapListStream<>(result);
+        // 改造为延迟执行：直接返回 MapListStream，由其内部处理遍历逻辑
+        return new MapListStream<>(source, keyMapper, valueMapper);
     }
 
     //  groupingBy { keySelector }: 返回一个Grouping对象，用于更复杂的聚合操作，如eachCount()、fold()等。
@@ -1218,28 +1410,25 @@ public class ListStream<T> {
             Function<T, S> keyMapper,
             Collector<T, A, V> collector
     ) {
-        // 获取collector的组件
-        Supplier<A> supplier = collector.supplier();
-        BiConsumer<A, T> accumulator = collector.accumulator();
-        Function<A, V> finisher = collector.finisher();
+        // 彻底的延迟执行：将分组聚合逻辑封装在 MapStream 的 Supplier 中
+        return new MapStream<>(() -> {
+            Supplier<A> supplier = collector.supplier();
+            BiConsumer<A, T> accumulator = collector.accumulator();
+            Function<A, V> finisher = collector.finisher();
 
-        // 同时进行分组和累加，避免两次遍历
-        Map<S, A> accumulatorMap = new HashMap<>();
-        for (T element : source) {
-            S key = keyMapper.apply(element);
-            // 获取或创建累加器
-            A acc = accumulatorMap.computeIfAbsent(key, k -> supplier.get());
-            // 直接累加元素
-            accumulator.accept(acc, element);
-        }
+            Map<S, A> accumulatorMap = new HashMap<>();
+            for (T element : source) {
+                S key = keyMapper.apply(element);
+                A acc = accumulatorMap.computeIfAbsent(key, k -> supplier.get());
+                accumulator.accept(acc, element);
+            }
 
-        // 对每个分组应用finisher得到最终结果
-        Map<S, V> finalResult = new HashMap<>(accumulatorMap.size());
-        for (Map.Entry<S, A> entry : accumulatorMap.entrySet()) {
-            finalResult.put(entry.getKey(), finisher.apply(entry.getValue()));
-        }
-
-        return new MapStream<>(finalResult);
+            Map<S, V> finalResult = new HashMap<>(accumulatorMap.size());
+            for (Map.Entry<S, A> entry : accumulatorMap.entrySet()) {
+                finalResult.put(entry.getKey(), finisher.apply(entry.getValue()));
+            }
+            return finalResult;
+        });
     }
 
 
@@ -1263,11 +1452,22 @@ public class ListStream<T> {
         return anyMatch(predicates);
     }
 
+    /**
+     * 检查流中是否至少有一个元素满足给定的谓词条件之一。
+     *
+     * @param predicates 谓词数组
+     * @return 只要有一个元素满足任意一个谓词，就返回 true
+     */
     @SafeVarargs
     public final boolean anyMatch(Predicate<T>... predicates) {
-        Iterable<T> filteredIterable = createFilteredIterable(elem ->
-                Arrays.stream(predicates).anyMatch(predicate -> predicate.test(elem)));
-        return of(filteredIterable).isNotEmpty();
+        if (predicates == null || predicates.length == 0) return any();
+        for (T elem : source) {
+            // 优化：采用循环匹配，支持短路返回
+            for (Predicate<T> p : predicates) {
+                if (p.test(elem)) return true;
+            }
+        }
+        return false;
     }
 
     //  all { predicate }: 检查集合中是否所有元素都满足给定条件。
@@ -1279,9 +1479,13 @@ public class ListStream<T> {
 
     @SafeVarargs
     public final boolean allMatch(Predicate<T>... predicates) {
-        Iterable<T> filteredIterable = createFilteredIterable(elem ->
-                Arrays.stream(predicates).allMatch(predicate -> predicate.test(elem)));
-        return of(filteredIterable).isNotEmpty();
+        if (predicates == null || predicates.length == 0) return true;
+        for (T elem : source) {
+            for (Predicate<T> p : predicates) {
+                if (!p.test(elem)) return false;
+            }
+        }
+        return true;
     }
 
     //  none(): 检查集合是否不包含任何元素。
@@ -1300,9 +1504,13 @@ public class ListStream<T> {
 
     @SafeVarargs
     public final boolean noneMatch(Predicate<T>... predicates) {
-        Iterable<T> filteredIterable = createFilteredIterable(elem ->
-                Arrays.stream(predicates).anyMatch(predicate -> predicate.test(elem)));
-        return of(filteredIterable).isEmpty();
+        if (predicates == null || predicates.length == 0) return none();
+        for (T elem : source) {
+            for (Predicate<T> p : predicates) {
+                if (p.test(elem)) return false;
+            }
+        }
+        return true;
     }
 
     //  contains(element): 检查集合是否包含指定元素。
@@ -1396,6 +1604,12 @@ public class ListStream<T> {
     }
     //  first(): 返回集合中的第一个元素，如果为空则抛出异常。
 
+    /**
+     * 获取流中的第一个元素。
+     *
+     * @return 集合中的第一个元素
+     * @throws IllegalCallerException 如果集合为空
+     */
     public T first() {
         Iterator<T> iterator = source.iterator();
         if (iterator.hasNext()) {
@@ -1411,9 +1625,14 @@ public class ListStream<T> {
     public final T first(Predicate<T>... predicates) {
         Objects.requireNonNull(predicates);
         for (final T t : source) {
-            if (Arrays.stream(predicates).allMatch(predicate -> predicate.test(t))) {
-                return t;
+            boolean matches = true;
+            for (Predicate<T> p : predicates) {
+                if (!p.test(t)) {
+                    matches = false;
+                    break;
+                }
             }
+            if (matches) return t;
         }
         throw new IllegalCallerException("无法找到参数");
     }
@@ -1465,9 +1684,14 @@ public class ListStream<T> {
         Objects.requireNonNull(predicates);
         T next = null;
         for (final T temp : source) {
-            if (Arrays.stream(predicates).allMatch(predicate -> predicate.test(temp))) {
-                next = temp;
+            boolean matches = true;
+            for (Predicate<T> p : predicates) {
+                if (!p.test(temp)) {
+                    matches = false;
+                    break;
+                }
             }
+            if (matches) next = temp;
         }
 
         if (next == null) {
@@ -1497,9 +1721,14 @@ public class ListStream<T> {
         Objects.requireNonNull(predicates);
         T next = null;
         for (final T temp : source) {
-            if (Arrays.stream(predicates).allMatch(predicate -> predicate.test(temp))) {
-                next = temp;
+            boolean matches = true;
+            for (Predicate<T> p : predicates) {
+                if (!p.test(temp)) {
+                    matches = false;
+                    break;
+                }
             }
+            if (matches) next = temp;
         }
 
         return next;
@@ -1507,20 +1736,26 @@ public class ListStream<T> {
 
     //  indexOf(element): 返回指定元素的第一个索引，如果不存在则返回-1。
 
+    /**
+     * 返回指定元素在流中的第一个索引位置。
+     *
+     * @param element 要查找的元素
+     * @return 元素的索引，如果未找到则返回 -1
+     */
     public final int indexOf(T element) {
         Iterator<T> iterator = source.iterator();
-        int index = 0; // 初始化索引为0
+        int index = 0;
 
         while (iterator.hasNext()) {
             T current = iterator.next();
-            // 使用 Objects.equals 进行安全比较，处理 null 值
+            // 使用 Objects.equals 安全比较
             if (Objects.equals(current, element)) {
-                return index; // 找到元素，返回当前索引
+                return index;
             }
-            index++; // 移动到下一个元素，索引递增
+            index++;
         }
 
-        return -1; // 遍历完所有元素，没有找到，返回 -1
+        return -1;
     }
 
     // ====================================================================================
@@ -1530,18 +1765,18 @@ public class ListStream<T> {
     // ================================ 排序 (Ordering)  ==================================
     // ====================================================================================
     //  sorted(): 返回一个新列表，按元素的自然顺序升序排序。
+    /**
+     * 对流中元素进行自然升序排序。
+     * 这是一个及早执行的操作，会触发所有之前的延迟计算。
+     *
+     * @return 排序后的 ListStream
+     */
     public final ListStream<T> sorted() {
-        // 1. 将所有元素收集到一个临时列表中
-        List<T> tempList = toList();
-
-        // 2. 对列表进行自然顺序升序排序
-        // 这里会要求 T 是 Comparable 类型，否则编译会报错。
-        // 如果你的 T 肯定都是 Comparable 类型，可以这样写。
-        // 如果不确定，或者想更通用，请看下面的 "补充说明"。
-        Collections.sort((List<Comparable>) tempList); // 强制转换为List<Comparable>，以便调用sort方法
-
-        // 3. 返回一个新的ListStream，包含排序后的元素
-        return ListStream.of(tempList);
+        return of(() -> {
+            List<T> tempList = toList();
+            Collections.sort((List<Comparable>) tempList);
+            return tempList.iterator();
+        });
     }
 
     //  sortedDescending(): 返回一个新列表，按元素的自然顺序降序排序。
@@ -1559,11 +1794,11 @@ public class ListStream<T> {
 
     @SuppressWarnings("unused")
     public ListStream<T> sort(Comparator<T> comparator) {
-        // 转换为List以进行排序
-        List<T> sortedList = toList();
-        // 执行排序
-        sortedList.sort(comparator);
-        return of(sortedList);
+        return of(() -> {
+            List<T> sortedList = toList();
+            sortedList.sort(comparator);
+            return sortedList.iterator();
+        });
     }
 
     public <U extends Comparable<? super U>> ListStream<T> sort(
@@ -1588,22 +1823,16 @@ public class ListStream<T> {
         Objects.requireNonNull(order, "order cannot be null");
         Objects.requireNonNull(nullPosition, "nullPosition cannot be null");
 
-        if (isEmpty()) {
-            return this;
-        }
-
-        SortStream<T> sortStream = new SortStream<>();
-
-        // 转换为List以进行排序
-        List<T> sortedList = toList();
-
-        // 创建比较器
-        Comparator<T> comparator = sortStream.createComparator(keyExtractor, order, nullPosition);
-
-        // 执行排序
-        sortedList.sort(comparator);
-
-        return of(sortedList);
+        return of(() -> {
+            List<T> sortedList = toList();
+            if (sortedList.isEmpty()) {
+                return Collections.emptyIterator();
+            }
+            SortStream<T> sortStream = new SortStream<>();
+            Comparator<T> comparator = sortStream.createComparator(keyExtractor, order, nullPosition);
+            sortedList.sort(comparator);
+            return sortedList.iterator();
+        });
     }
 
     /**
@@ -1614,26 +1843,23 @@ public class ListStream<T> {
     @SafeVarargs
     public final <U extends Comparable<? super U>> ListStream<T> sort(Function<SortStream<T>, Comparator<T>>... streamOperation) {
 
-        if (isEmpty()) {
-            return this;
-        }
-
-        // 转换为List以进行排序
-        List<T> sortedList = toList();
-
-        Comparator<T> comparator = null;
-        for (Function<SortStream<T>, Comparator<T>> comparatorFunction : streamOperation) {
-            if (comparator == null) {
-                comparator = comparatorFunction.apply(new SortStream<>());
-            } else {
-                comparator = comparator.thenComparing(comparatorFunction.apply(new SortStream<>()));
+        return of(() -> {
+            List<T> sortedList = toList();
+            if (sortedList.isEmpty()) {
+                return Collections.emptyIterator();
             }
-        }
 
-        // 执行排序
-        sortedList.sort(comparator);
-
-        return of(sortedList);
+            Comparator<T> comparator = null;
+            for (Function<SortStream<T>, Comparator<T>> comparatorFunction : streamOperation) {
+                if (comparator == null) {
+                    comparator = comparatorFunction.apply(new SortStream<>());
+                } else {
+                    comparator = comparator.thenComparing(comparatorFunction.apply(new SortStream<>()));
+                }
+            }
+            sortedList.sort(comparator);
+            return sortedList.iterator();
+        });
     }
 
 
@@ -1648,23 +1874,21 @@ public class ListStream<T> {
     //  shuffled(): 返回一个随机排列的新列表。
 
     public final ListStream<T> shuffled() {
-        // 1. 将所有元素收集到一个临时列表中
-        List<T> tempList = toList();
-
-        // 2. 随机洗牌这个列表
-        Collections.shuffle(tempList);
-
-        // 3. 返回一个新的ListStream，包含洗牌后的元素
-        return ListStream.of(tempList);
+        return of(() -> {
+            List<T> tempList = toList();
+            Collections.shuffle(tempList);
+            return tempList.iterator();
+        });
     }
 
     //  reversed(): 返回一个元素顺序颠倒的新列表。
 
     public ListStream<T> reversed() {
-        // 反转列表
-        List<T> list = toList();
-        Collections.reverse(list);
-        return of(list);
+        return of(() -> {
+            List<T> list = toList();
+            Collections.reverse(list);
+            return list.iterator();
+        });
     }
 
     // ====================================================================================
@@ -1687,8 +1911,13 @@ public class ListStream<T> {
 
     //  toList(): 将集合转换为一个List。
 
+    /**
+     * 将流中的元素收集到一个列表中。
+     * 优化：如果数据源本身已经是 List，则直接返回。
+     *
+     * @return 包含流中所有元素的 List
+     */
     public List<T> toList() {
-        // 如果是Collection类型，直接返回size
         if (source instanceof List<T>) {
             return (List<T>) source;
         }
@@ -1729,23 +1958,32 @@ public class ListStream<T> {
     // ====================================================================================
     //  elementAt(index): 返回指定索引处的元素。
 
+    /**
+     * 返回指定索引处的元素。
+     * 优化：针对 List 和 Collection 类型提供了快速访问路径。
+     *
+     * @param index 索引
+     * @return 该索引处的元素
+     * @throws IndexOutOfBoundsException 如果索引越界
+     */
     public T elementAt(int index) {
         if (index < 0) {
             throw new IndexOutOfBoundsException("Index: " + index);
         }
         if (source instanceof final Collection<T> ts) {
-            final int endIndex = ts.size() - 1;
-            if (endIndex > index) {
-                if (ts instanceof List<T> list) {
-                    return list.get(index);
-                }
-                return ts.stream().skip(index).toList().get(0);
-            } else if (endIndex == index) {
-                return last();
-            } else {
-                throw new IndexOutOfBoundsException("Index: " + index + ", Size: " + ts.size());
+            final int size = ts.size();
+            if (index >= size) {
+                throw new IndexOutOfBoundsException("Index: " + index + ", Size: " + size);
             }
+            if (ts instanceof List<T> list) {
+                // 针对 List 直接通过 get 访问
+                return list.get(index);
+            }
+            // 使用 stream.skip().findFirst() 进行局部遍历优化
+            return ts.stream().skip(index).findFirst()
+                    .orElseThrow(() -> new IndexOutOfBoundsException("Index: " + index + ", Size: " + size));
         }
+        // 普通 Iterable 只能顺序查找
         int i = 0;
         for (final T t : source) {
             if (i == index) {
@@ -1767,17 +2005,13 @@ public class ListStream<T> {
             return null;
         }
         if (source instanceof final Collection<T> ts) {
-            final int endIndex = ts.size() - 1;
-            if (endIndex > index) {
-                if (ts instanceof List<T> list) {
-                    return list.get(index);
-                }
-                return ts.stream().skip(index).toList().get(0);
-            } else if (endIndex == index) {
-                return last();
-            } else {
+            if (index >= ts.size()) {
                 return null;
             }
+            if (ts instanceof List<T> list) {
+                return list.get(index);
+            }
+            return ts.stream().skip(index).findFirst().orElse(null);
         }
         int i = 0;
         for (final T t : source) {
@@ -1795,17 +2029,13 @@ public class ListStream<T> {
             return defaultValue;
         }
         if (source instanceof final Collection<T> ts) {
-            final int endIndex = ts.size() - 1;
-            if (endIndex > index) {
-                if (ts instanceof List<T> list) {
-                    return list.get(index);
-                }
-                return ts.stream().skip(index).toList().get(0);
-            } else if (endIndex == index) {
-                return last();
-            } else {
+            if (index >= ts.size()) {
                 return defaultValue;
             }
+            if (ts instanceof List<T> list) {
+                return list.get(index);
+            }
+            return ts.stream().skip(index).findFirst().orElse(defaultValue);
         }
         int i = 0;
         for (final T t : source) {
@@ -1983,56 +2213,57 @@ public class ListStream<T> {
 
     @SafeVarargs
     public final ListStream<T> minus(Iterable<T>... elementsToRemove) {
-        // 将所有要移除的元素收集到一个Set中，以便高效查找
-        Set<T> removalSet = new HashSet<>();
-
-        if (elementsToRemove != null) {
-            for (Iterable<T> iterable : elementsToRemove) {
-                for (T item : iterable) {
-                    removalSet.add(item);
-                }
-            }
-        }
-
-        return ListStream.of(() -> new Iterator<>() {
-            final Iterator<T> iterator = source.iterator();
-            T nextElement;
-            boolean hasNextComputed = false;
-            boolean hasNextResult = false;
-
-            @Override
-            public boolean hasNext() {
-                if (!hasNextComputed) {
-                    computeNextMultiple();
-                }
-                return hasNextResult;
-            }
-
-            @Override
-            public T next() {
-                if (!hasNextComputed) {
-                    computeNextMultiple();
-                }
-                if (!hasNextResult) {
-                    throw new NoSuchElementException();
-                }
-                hasNextComputed = false;
-                return nextElement;
-            }
-
-            private void computeNextMultiple() {
-                while (iterator.hasNext()) {
-                    T current = iterator.next();
-                    if (!removalSet.contains(current)) { // 检查当前元素是否在移除集合中
-                        nextElement = current;
-                        hasNextResult = true;
-                        hasNextComputed = true;
-                        return;
+        return of(() -> {
+            // 在迭代开始时构建移除集，彻底延迟且支持流重用
+            Set<T> removalSet = new HashSet<>();
+            if (elementsToRemove != null) {
+                for (Iterable<T> iterable : elementsToRemove) {
+                    for (T item : iterable) {
+                        removalSet.add(item);
                     }
                 }
-                hasNextResult = false;
-                hasNextComputed = true;
             }
+
+            return new Iterator<>() {
+                final Iterator<T> iterator = source.iterator();
+                T nextElement;
+                boolean hasNextComputed = false;
+                boolean hasNextResult = false;
+
+                @Override
+                public boolean hasNext() {
+                    if (!hasNextComputed) {
+                        computeNextMultiple();
+                    }
+                    return hasNextResult;
+                }
+
+                @Override
+                public T next() {
+                    if (!hasNextComputed) {
+                        computeNextMultiple();
+                    }
+                    if (!hasNextResult) {
+                        throw new NoSuchElementException();
+                    }
+                    hasNextComputed = false;
+                    return nextElement;
+                }
+
+                private void computeNextMultiple() {
+                    while (iterator.hasNext()) {
+                        T current = iterator.next();
+                        if (!removalSet.contains(current)) {
+                            nextElement = current;
+                            hasNextResult = true;
+                            hasNextComputed = true;
+                            return;
+                        }
+                    }
+                    hasNextResult = false;
+                    hasNextComputed = true;
+                }
+            };
         });
     }
 
@@ -2052,41 +2283,36 @@ public class ListStream<T> {
     }
 
     public void split(int size, Consumer<List<T>> consumer) {
-        List<List<T>> parts = new ArrayList<>();
-        int i = 0;
-        List<T> temp = null;
+        if (size <= 0) throw new IllegalArgumentException("size must be > 0");
+        List<T> temp = new ArrayList<>(size);
         for (T t : source) {
-            if (temp == null || i % size == 0) {
-                temp = new ArrayList<>(size);
-                parts.add(temp);
-            }
             temp.add(t);
-            ++i;
+            if (temp.size() == size) {
+                consumer.accept(temp);
+                temp = new ArrayList<>(size);
+            }
         }
-
-        for (List<T> part : parts) {
-            consumer.accept(part);
+        if (!temp.isEmpty()) {
+            consumer.accept(temp);
         }
     }
 
     public List<List<T>> splitToList(int size) {
         List<List<T>> parts = new ArrayList<>();
-        int i = 0;
-        List<T> temp = null;
-        for (T t : source) {
-            if (temp == null || i % size == 0) {
-                temp = new ArrayList<>(size);
-                parts.add(temp);
-            }
-            temp.add(t);
-            ++i;
-        }
-
+        split(size, parts::add);
         return parts;
     }
 
 
     //  windowed(size, step = 1, partialWindows = false): 创建滑动窗口。
+    /**
+     * 滑动窗口操作。根据指定的窗口大小和步长创建子列表组成的流。
+     *
+     * @param size           窗口大小
+     * @param step           步长
+     * @param partialWindows 是否允许返回不完整的末尾窗口
+     * @return 子列表组成的 ListStream
+     */
     public final ListStream<List<T>> windowed(int size, int step, boolean partialWindows) {
         if (size <= 0) {
             throw new IllegalArgumentException("Window size must be greater than 0: " + size);
@@ -2097,9 +2323,9 @@ public class ListStream<T> {
 
         return ListStream.of(() -> new Iterator<>() {
             final Iterator<T> sourceIterator = source.iterator();
-            // 使用 Deque 作为滑动窗口的内部存储，以便高效地添加和移除元素
+            // 使用 Deque 管理窗口内的可见元素
             final Deque<T> window = new LinkedList<>();
-            int currentWindowIndex = 0; // 记录当前窗口的起始索引（对于完整的窗口）
+            int currentWindowIndex = 0;
             boolean hasNextComputed = false;
             boolean hasNextResult = false;
             List<T> nextWindow;
@@ -2125,51 +2351,42 @@ public class ListStream<T> {
             }
 
             private void computeNext() {
-                // 填充或滑动窗口直到找到下一个合格的窗口或耗尽源
                 while (sourceIterator.hasNext() || (partialWindows && !window.isEmpty())) {
-                    // 如果窗口大小不足，先填充窗口
+                    // 补充窗口中缺失的元素
                     while (sourceIterator.hasNext() && window.size() < size) {
                         final T next = sourceIterator.next();
                         window.addLast(next);
                     }
 
-                    // 检查是否能形成完整窗口
+                    // 检查是否满足返回窗口的条件
                     if (window.size() == size) {
-                        nextWindow = new ArrayList<>(window); // 复制窗口内容
+                        nextWindow = new ArrayList<>(window);
                         hasNextResult = true;
                         hasNextComputed = true;
 
-                        // 根据 step 移除窗口开头的元素
+                        // 根据 step 滑动窗口：移除窗口开头的元素
                         for (int i = 0; i < step; i++) {
                             if (!window.isEmpty()) {
                                 window.removeFirst();
                             } else {
-                                break; // 如果窗口已经空了，就停止移除
+                                break;
                             }
                         }
-                        currentWindowIndex += step; // 更新逻辑索引
+                        currentWindowIndex += step;
                         return;
                     }
-                    // 如果不能形成完整窗口且允许 partialWindows，并且窗口不为空
+                    // 处理末尾不完整的窗口
                     else if (partialWindows && !window.isEmpty()) {
-                        nextWindow = new ArrayList<>(window); // 复制当前（不完整）窗口内容
+                        nextWindow = new ArrayList<>(window);
                         hasNextResult = true;
                         hasNextComputed = true;
-
-                        // 对于 partialWindows，我们通常在返回后清空窗口，
-                        // 或者根据 step 移除部分，但通常 partialWindows 表示流的末尾，
-                        // 一旦返回了一个不完整的窗口，就意味着结束了。
-                        // 如果 step > window.size()，就需要清空窗口并结束。
-                        // 这里我们移除所有，因为是最后一次机会返回。
-                        window.clear(); // 返回最后一个部分窗口后，清空并结束
+                        window.clear();
                         return;
                     }
-                    // 如果 sourceIterator 已经没有更多元素，且窗口为空或不能形成完整窗口
                     else {
-                        break; // 退出循环，没有更多窗口
+                        break;
                     }
                 }
-                // 没有更多窗口可生成
                 hasNextResult = false;
                 hasNextComputed = true;
             }
@@ -2185,15 +2402,36 @@ public class ListStream<T> {
     public final ListStream<List<T>> windowed(int size, int step) {
         return windowed(size, step, false);
     }
-    //  onEach { action }: 对每个元素执行给定的操作，并返回原始集合。
-    //  partition { predicate }: 将集合分成两个列表：一个包含满足条件的元素，另一个包含不满足条件的元素。
+    /**
+     * 对流中的每个元素执行给定的操作，执行后返回流本身。这通常用于调试。
+     * 这是一个中间操作，支持延迟执行。
+     *
+     * @param action 执行的操作
+     * @return 原始的 ListStream
+     */
+    public final ListStream<T> onEach(Consumer<? super T> action) {
+        return peek(action);
+    }
 
+    /**
+     * 分区操作。根据谓词条件将流分为两个列表。
+     *
+     * @param predicates 分区谓词
+     * @return 包含两个列表的 Tuple2，第一个列表包含满足条件的元素，第二个包含不满足条件的元素
+     */
     public Tuple2<List<T>, List<T>> partitionTuple2(Predicate<T>... predicates) {
         Tuple2<List<T>, List<T>> parts = new Tuple2<>();
         parts.t1 = new ArrayList<>();
         parts.t2 = new ArrayList<>();
         for (T t : source) {
-            if (Arrays.stream(predicates).allMatch(predicate -> predicate.test(t))) {
+            boolean matches = true;
+            for (Predicate<T> p : predicates) {
+                if (!p.test(t)) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
                 parts.t1.add(t);
             } else {
                 parts.t2.add(t);
@@ -2208,7 +2446,14 @@ public class ListStream<T> {
         parts.add(new ArrayList<>());
         parts.add(new ArrayList<>());
         for (T t : source) {
-            if (Arrays.stream(predicates).allMatch(predicate -> predicate.test(t))) {
+            boolean matches = true;
+            for (Predicate<T> p : predicates) {
+                if (!p.test(t)) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
                 parts.get(0).add(t);
             } else {
                 parts.get(1).add(t);
@@ -2249,8 +2494,13 @@ public class ListStream<T> {
     }
 
     /**
-     * 将元素转换为Map，使用keyMapper生成key，valueMapper生成value
-     * 如果有重复的key，保留最后一个值
+     * 将流元素转换为 Map。如果存在重复键，默认保留较晚出现的元素（Overwrite）。
+     *
+     * @param keyMapper   键提取器
+     * @param valueMapper 值提取器
+     * @param <K>         键类型
+     * @param <V>         值类型
+     * @return 结果 Map
      */
     public <K, V> Map<K, V> toMap(Function<T, K> keyMapper, Function<T, V> valueMapper) {
         return toMap(keyMapper, valueMapper, (v1, v2) -> v2);
@@ -2268,10 +2518,6 @@ public class ListStream<T> {
         Objects.requireNonNull(valueMapper, "valueMapper cannot be null");
         Objects.requireNonNull(mergeFunction, "mergeFunction cannot be null");
 
-        if (isEmpty()) {
-            return new HashMap<>();
-        }
-
         Map<K, V> result = new HashMap<>();
         for (T element : source) {
             if (element != null) {
@@ -2287,36 +2533,64 @@ public class ListStream<T> {
 
 
     public ListStream<T> add(T t) {
-        final List<T> list = toList();
-        list.add(t);
-        return this;
+        return plus(t);
     }
-
 
     public ListStream<T> add(int index, T t) {
-        final List<T> list = toList();
-        list.add(index, t);
-        return this;
+        if (index < 0) {
+            throw new IndexOutOfBoundsException("Index: " + index);
+        }
+        return of(() -> new Iterator<T>() {
+            private final Iterator<T> it = source.iterator();
+            private int curr = 0;
+            private boolean added = false;
+            private T nextElem;
+            private boolean hasNextComputed = false;
+            private boolean hasNextResult = false;
+
+            @Override
+            public boolean hasNext() {
+                if (!hasNextComputed) {
+                    if (!added && curr == index) {
+                        nextElem = t;
+                        hasNextResult = true;
+                        hasNextComputed = true;
+                    } else if (it.hasNext()) {
+                        nextElem = it.next();
+                        curr++;
+                        hasNextResult = true;
+                        hasNextComputed = true;
+                    } else {
+                        hasNextResult = false;
+                        hasNextComputed = true;
+                    }
+                }
+                return hasNextResult;
+            }
+
+            @Override
+            public T next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                hasNextComputed = false;
+                if (!added && nextElem == t && curr == index) {
+                    added = true;
+                }
+                return nextElem;
+            }
+        });
     }
 
-
     public ListStream<T> addAll(List<T> ts) {
-        final List<T> list = toList();
-        list.addAll(ts);
-        return this;
+        return plus(ts);
     }
 
     public ListStream<T> concat(List<T> ts) {
-        final List<T> list = toList();
-        list.addAll(ts);
-        return of(list);
+        return plus(ts);
     }
 
     @SafeVarargs
     public final ListStream<T> add(T... ts) {
-        final List<T> list = toList();
-        list.addAll(X.asList(ts));
-        return this;
+        return plus(X.asList(ts));
     }
 
 
@@ -2335,12 +2609,11 @@ public class ListStream<T> {
     }
 
     /**
-     * 返回一个新的 ListStream，包含原始列表的子列表，从索引 subBegin 开始，到索引 subEnd 结束（不包含）。
+     * 截取子流。
      *
-     * @param subBegin 子列表的起始索引（包含）
-     * @param subEnd   子列表的结束索引（不包含）
-     * @return 新的 ListStream 包含指定范围的子列表
-     * @throws IllegalArgumentException 如果 subBegin 为负数，或者 subEnd 小于 subBegin
+     * @param subBegin 起始索引（包含）
+     * @param subEnd   结束索引（不包含）
+     * @return 截取后的子流
      */
     public ListStream<T> sub(int subBegin, int subEnd) {
         if (subBegin < 0) {
@@ -2356,6 +2629,11 @@ public class ListStream<T> {
 
             @Override
             public boolean hasNext() {
+                // 先消费（丢弃）起点的元素
+                while (currentIndex < subBegin && iterator.hasNext()) {
+                    iterator.next();
+                    currentIndex++;
+                }
                 return currentIndex < subEnd && iterator.hasNext();
             }
 
@@ -2366,9 +2644,6 @@ public class ListStream<T> {
                 }
                 T next = iterator.next();
                 currentIndex++;
-                if (currentIndex <= subBegin) {
-                    return this.next(); // 跳过 subBegin 之前的元素
-                }
                 return next;
             }
         });
@@ -2407,136 +2682,66 @@ public class ListStream<T> {
 
     private boolean isBlankElement(T elem, Function<T, ?>[] functions) {
         if (functions == null || functions.length == 0) {
-            if (elem == null) {
-                return true;
-            }
-            if (elem instanceof CharSequence str) {
-                return str.isEmpty() || "".contentEquals(str);
-            }
+            if (elem == null) return true;
+            if (elem instanceof CharSequence str) return str.isEmpty() || "".contentEquals(str);
             return false;
         }
 
-        return Arrays.stream(functions).allMatch(fun -> {
+        for (Function<T, ?> fun : functions) {
             Object value = fun.apply(elem);
-            if (value == null) {
-                return true;
-            }
-            if (value instanceof CharSequence str) {
-                return str.isEmpty() || "".contentEquals(str);
-            }
-            return false;
-        });
+            boolean isBlank = value == null || (value instanceof CharSequence str && (str.isEmpty() || "".contentEquals(str)));
+            if (!isBlank) return false;
+        }
+        return true;
     }
 
 
     private boolean isNotBlankElement(T elem, Function<T, ?>[] functions) {
         if (functions == null || functions.length == 0) {
-            if (elem == null) {
-                return false;
-            }
-            if (elem instanceof CharSequence str) {
-                return !str.isEmpty() && !"".contentEquals(str);
-            }
+            if (elem == null) return false;
+            if (elem instanceof CharSequence str) return !str.isEmpty() && !"".contentEquals(str);
             return true;
         }
 
-        return Arrays.stream(functions).allMatch(fun -> {
+        for (Function<T, ?> fun : functions) {
             Object value = fun.apply(elem);
-            if (value == null) {
-                return false;
-            }
-            if (value instanceof CharSequence) {
-                return !value.toString().isEmpty();
-            }
-            return true;
-        });
+            boolean isNotBlank = value != null && (!(value instanceof CharSequence str) || (!str.isEmpty() && !"".contentEquals(str)));
+            if (!isNotBlank) return false;
+        }
+        return true;
     }
 
     private Iterable<T> createFilteredIterable(BiPredicate<Integer, T> filterCondition) {
-        return () -> new Iterator<>() {
-            final Iterator<T> iterator = source.iterator();
-            int index = 0;
-            T nextElement;
-            boolean hasNextComputed = false;
-            boolean hasNextResult = false;
+        return () -> new AbstractStreamIterator<T, T>(source.iterator()) {
+            private int index = 0;
 
             @Override
-            public boolean hasNext() {
-                if (!hasNextComputed) {
-                    computeNext(filterCondition);
-                }
-                return hasNextResult;
-            }
-
-            @Override
-            public T next() {
-                if (!hasNextComputed) {
-                    computeNext(filterCondition);
-                }
-                if (!hasNextResult) {
-                    throw new NoSuchElementException();
-                }
-                hasNextComputed = false;
-                return nextElement;
-            }
-
-            private void computeNext(BiPredicate<Integer, T> condition) {
-                while (iterator.hasNext()) {
-                    T elem = iterator.next();
-                    if (condition.test(index, elem)) {
+            protected boolean computeNext() {
+                while (sourceIterator.hasNext()) {
+                    T elem = sourceIterator.next();
+                    int i = index++;
+                    if (filterCondition.test(i, elem)) {
                         nextElement = elem;
-                        hasNextResult = true;
-                        hasNextComputed = true;
-                        index += 1;
-                        return;
+                        return true;
                     }
-                    index += 1;
                 }
-                hasNextResult = false;
-                hasNextComputed = true;
+                return false;
             }
         };
     }
 
     private Iterable<T> createFilteredIterable(Predicate<T> filterCondition) {
-        return () -> new Iterator<>() {
-            final Iterator<T> iterator = source.iterator();
-            T nextElement;
-            boolean hasNextComputed = false;
-            boolean hasNextResult = false;
-
+        return () -> new AbstractStreamIterator<T, T>(source.iterator()) {
             @Override
-            public boolean hasNext() {
-                if (!hasNextComputed) {
-                    computeNext(filterCondition);
-                }
-                return hasNextResult;
-            }
-
-            @Override
-            public T next() {
-                if (!hasNextComputed) {
-                    computeNext(filterCondition);
-                }
-                if (!hasNextResult) {
-                    throw new NoSuchElementException();
-                }
-                hasNextComputed = false;
-                return nextElement;
-            }
-
-            private void computeNext(Predicate<T> condition) {
-                while (iterator.hasNext()) {
-                    T elem = iterator.next();
-                    if (condition.test(elem)) {
+            protected boolean computeNext() {
+                while (sourceIterator.hasNext()) {
+                    T elem = sourceIterator.next();
+                    if (filterCondition.test(elem)) {
                         nextElement = elem;
-                        hasNextResult = true;
-                        hasNextComputed = true;
-                        return;
+                        return true;
                     }
                 }
-                hasNextResult = false;
-                hasNextComputed = true;
+                return false;
             }
         };
     }
@@ -2602,5 +2807,51 @@ public class ListStream<T> {
         source.forEach(action);
     }
 
+
+    /**
+     * 抽象流迭代器基类。
+     * 封装了 `hasNext` 和 `next` 的通用状态逻辑，子类只需实现 `computeNext()` 方法。
+     * 有效防止了在多次调用 `hasNext` 时产生的副作用或重复计算。
+     */
+    private abstract static class AbstractStreamIterator<T, R> implements Iterator<R> {
+        /** 源数据迭代器 */
+        protected final Iterator<T> sourceIterator;
+        /** 缓存的下一个元素 */
+        protected R nextElement;
+        /** 是否已计算过下一个元素 */
+        private boolean hasNextComputed = false;
+        /** 计算出的 hasNext 结果 */
+        private boolean hasNextResult = false;
+
+        protected AbstractStreamIterator(Iterator<T> sourceIterator) {
+            this.sourceIterator = sourceIterator;
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (!hasNextComputed) {
+                hasNextResult = computeNext();
+                hasNextComputed = true;
+            }
+            return hasNextResult;
+        }
+
+        @Override
+        public R next() {
+            if (!hasNext()) {
+                throw new NoSuchElementException();
+            }
+            // 消耗掉当前缓存的结果
+            hasNextComputed = false;
+            return nextElement;
+        }
+
+        /**
+         * 计算下一个元素的逻辑。由子类实现。
+         *
+         * @return 如果有下一个元素则返回 true，并将元素存入 nextElement；否则返回 false。
+         */
+        protected abstract boolean computeNext();
+    }
 
 }
