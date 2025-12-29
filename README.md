@@ -18,6 +18,32 @@
 
 ---
 
+## 引入方法
+
+```xml
+    <dependencies>
+        <dependency>
+            <groupId>com.zyf</groupId>
+            <artifactId>x-util</artifactId>
+            <version>1.1</version>
+        </dependency>
+    </dependencies>
+
+    <repositories>
+        <!-- 曾玉飞 maven 个人仓库 -->
+        <repository>
+            <id>maven-repo-master</id>
+            <url>https://raw.github.com/zengyufei/maven-repo/master/</url>
+            <snapshots>
+                <enabled>true</enabled>
+                <updatePolicy>always</updatePolicy>
+            </snapshots>
+        </repository>
+    </repositories>
+```
+
+---
+
 ## 🛠 一、 工厂方法 (Creation)
 
 如何快速将数据包装进 `Z` 体系？
