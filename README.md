@@ -72,11 +72,12 @@
 | **`apply` (then)** | **业务批量转换** | `Z<R>` | `ids -> dao.findByIds(ids)` |
 
 ### 🛠 `apply` 算子的妙用 (ORM / N+1 解决)
-在 Spring Boot 开发中，利用 `apply` 可以将 IDs 集合一次性交给外部 Service 批量查询：
+在 Spring Boot 开发中，利用 `apply` 可以将集合暂时性总结交给外部 Service 批量查询：
 ```java
-List<MchOrder> orders = Z.li(ids)
+List<Order> orders = Z.li(userList)
+    .map(User::getId) // List<User> -> List<String>
     .distinct()
-    .apply(idList -> orderDao.selectBatch(idList)) // List<ID> -> List<Order>
+    .apply(userIds -> orderMapper.selectByIds(userIds)) // List<String> -> List<Order>
     .toList();
 ```
 
@@ -115,13 +116,14 @@ Z.java 的分组是**完全延迟加载**的，只有在你调用 `toMap()` 或�
 ### 1. 基础分组 (`groupBy`)
 ```java
 // 返回 ZMap 类型，封装了延迟计算逻辑
-Z.ZMap<Integer, User> group = Z.li(users).groupBy(User::getAge);
+Z.ZMap<Integer, User> group = Z.li(users)
+                .groupBy(User::getAge);
 
 // 转换为内存 Map
 Map<Integer, List<User>> map = group.toMap();
 ```
 
-### 2. 分组后转换 (`valueStream`)
+### 2. 分组后二次处理 (`valueStream`)
 ```java
 // 统计每个年龄的人数
 Map<Integer, Long> ageCount = Z.li(users)
@@ -157,11 +159,11 @@ Map<Integer, Long> ageCount = Z.li(users)
 
 不同于 `peek` 只能看单个元素，`peekStream` 可以让你观察当前链条中的“所有”剩余元素快照：
 ```java
-Z.li(users)
-  .filter(...)
-  .peekStream(s -> System.out.println("当前合格数: " + s.count()))
-  .map(...)
-  .toList();
+    Z.li(users)
+      .filter(...)
+      .peekStream(s -> System.out.println("当前合格数: " + s.count()))
+      .map(...)
+      .toList();
 ```
 
 ---
